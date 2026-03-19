@@ -4,6 +4,7 @@ const SOURCES = [
   SourceUukanshu,
   SourceJjwxc,
   SourceQidian,
+  SourceBiquge,
 ];
 
 function getSource(url) {
@@ -298,6 +299,7 @@ document.getElementById("btnSubmit").addEventListener("click", async () => {
         <li>https://uukanshu.cc/book/<b>{id}</b>/</li>
         <li>https://www.jjwxc.net/onebook.php?novelid=<b>{id}</b></li>
         <li>https://www.qidian.com/book/<b>{id}</b>/</li>
+        <li>https://www.biquge.tw/book/<b>{id}</b>/</li>
       </ul>
     `;
     return;
