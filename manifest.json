@@ -19,7 +19,8 @@
     "https://www.jjwxc.net/*",
     "http://www.jjwxc.net/*",
     "https://www.qidian.com/*",
-    "https://qidian.com/*"
+    "https://qidian.com/*",
+    "https://www.biquge.tw/*"
   ],
   "icons": {
     "16": "icons/icon16.png",
