@@ -5,6 +5,7 @@ const SOURCES = [
   SourceJjwxc,
   SourceQidian,
   SourceBiquge,
+  Source52shuku,
 ];
 
 function getSource(url) {
@@ -31,7 +32,7 @@ function waitForTabComplete(tabId) {
     const timeout = setTimeout(() => {
       chrome.webNavigation.onCompleted.removeListener(listener);
       resolve(); // ← đổi reject thành resolve để không báo lỗi
-    }, 30000); // ← tăng từ 15s lên 30s
+    }, 60000); // ← tăng từ 15s lên 60s
 
     function listener(details) {
       if (details.tabId === tabId && details.frameId === 0) {
@@ -300,6 +301,7 @@ document.getElementById("btnSubmit").addEventListener("click", async () => {
         <li>https://www.jjwxc.net/onebook.php?novelid=<b>{id}</b></li>
         <li>https://www.qidian.com/book/<b>{id}</b>/</li>
         <li>https://www.biquge.tw/book/<b>{id}</b>/</li>
+        <li>https://www.52shuku.net/<b>{path}</b>.html</li>
       </ul>
     `;
     return;
