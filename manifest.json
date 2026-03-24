@@ -20,7 +20,8 @@
     "http://www.jjwxc.net/*",
     "https://www.qidian.com/*",
     "https://qidian.com/*",
-    "https://www.biquge.tw/*"
+    "https://www.biquge.tw/*",
+    "https://www.52shuku.net/*"
   ],
   "icons": {
     "16": "icons/icon16.png",
