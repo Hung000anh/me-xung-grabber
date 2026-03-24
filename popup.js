@@ -12,9 +12,6 @@ function getSource(url) {
   return SOURCES.find(s => s.pattern.test(url)) || null;
 }
 
-// ─── Trạng thái download ─────────────────────────────────
-
-
 // ─── Storage ────────────────────────────────────────────
 async function saveState(url, preview, chapters) {
   await chrome.storage.local.set({
@@ -28,11 +25,11 @@ async function clearState() {
 
 // ─── Wait for tab ────────────────────────────────────────
 function waitForTabComplete(tabId) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const timeout = setTimeout(() => {
       chrome.webNavigation.onCompleted.removeListener(listener);
-      resolve(); // ← đổi reject thành resolve để không báo lỗi
-    }, 60000); // ← tăng từ 15s lên 60s
+      resolve();
+    }, 60000);
 
     function listener(details) {
       if (details.tabId === tabId && details.frameId === 0) {
@@ -93,35 +90,76 @@ function renderProgressBar(pct) {
     </div>`;
 }
 
+// ─── Lấy content 1 chapter (tự động chọn fetch hay tab) ──────────
+async function fetchChapterContent(source, chapter) {
+  // Chapter chưa mua → trả về placeholder luôn, không cần request
+  if (chapter.vip && !chapter.purchased) {
+    return {
+      chapter_title: chapter.chapter_title,
+      chapter_url: chapter.chapter_url,
+      content: "【Chưa mua】",
+    };
+  }
+
+  // VIP đã mua → dùng tab (qua background.js)
+  if (chapter.vip && chapter.purchased && source.name === "qidian") {
+    return await source.fetchContentViaTab(chapter.chapter_url);
+  }
+
+  // Free → fetch bình thường
+  return await source.fetchContent(chapter.chapter_url);
+}
+
+// ─── Download tất cả chapters ────────────────────────────
 async function downloadAllChaptersAsZip(source, bookName, chapters) {
   const zip = new JSZip();
   const folder = zip.folder(bookName || "book");
   const total = chapters.length;
   const progressDiv = document.getElementById("downloadProgress");
 
+  // Đếm số chapter thực sự cần download (bỏ qua unpurchased)
+  const toDownload = chapters.filter(c => !(c.vip && !c.purchased)).length;
+  const unpurchased = chapters.filter(c => c.vip && !c.purchased).length;
+
+  let done = 0;
+
   for (let i = 0; i < total; i++) {
     const c = chapters[i];
     const pct = Math.round((i / total) * 100);
-    progressDiv.innerHTML =
-      `<div>⏳ ${i + 1}/${total}: ${c.chapter_title}</div>` +
-      renderProgressBar(pct);
+
+    const label = (c.vip && !c.purchased)
+      ? `⏭ ${i + 1}/${total}: ${c.chapter_title} (chưa mua)`
+      : `⏳ ${i + 1}/${total}: ${c.chapter_title}`;
+
+    progressDiv.innerHTML = `<div>${label}</div>` + renderProgressBar(pct);
 
     try {
-      const result = await source.fetchContent(c.chapter_url);
+      const result = await fetchChapterContent(source, c);
       const arrayBuffer = await buildDocxBuffer(result);
       const safeName = c.chapter_title.replace(/[\\/:*?"<>|]/g, "_");
       const fileName = `${String(c.chapter_number).padStart(4, "0")}_${safeName}.docx`;
       folder.file(fileName, arrayBuffer);
+      done++;
     } catch (err) {
       console.error(`Lỗi chapter ${c.chapter_number}:`, err.message);
+      // Ghi file lỗi để không bị mất số thứ tự
+      const safeName = c.chapter_title.replace(/[\\/:*?"<>|]/g, "_");
+      const fileName = `${String(c.chapter_number).padStart(4, "0")}_${safeName}.docx`;
+      const errChapter = {
+        chapter_title: c.chapter_title,
+        content: `【Lỗi: ${err.message}】`,
+      };
+      const arrayBuffer = await buildDocxBuffer(errChapter);
+      folder.file(fileName, arrayBuffer);
     }
 
-    await new Promise(r => setTimeout(r, source.downloadDelay || 800));
+    // Chỉ delay nếu có gọi network (không delay chapter chưa mua)
+    if (!(c.vip && !c.purchased)) {
+      await new Promise(r => setTimeout(r, source.downloadDelay || 800));
+    }
   }
 
-  progressDiv.innerHTML =
-    `<div>📦 Đang nén zip...</div>` +
-    renderProgressBar(99);
+  progressDiv.innerHTML = `<div>📦 Đang nén zip...</div>` + renderProgressBar(99);
 
   const blob = await zip.generateAsync({ type: "blob" });
   const url = URL.createObjectURL(blob);
@@ -131,13 +169,13 @@ async function downloadAllChaptersAsZip(source, bookName, chapters) {
   a.click();
   URL.revokeObjectURL(url);
 
-  progressDiv.innerHTML =
-    `<div style="color:#0f9d58;">✅ Hoàn tất! Đã tải ${total} chapters.</div>` +
-    renderProgressBar(100);
+  let summary = `✅ Hoàn tất! Đã tải ${done} chapters.`;
+  if (unpurchased > 0) summary += ` (${unpurchased} chương chưa mua ghi placeholder)`;
 
+  progressDiv.innerHTML = `<div style="color:#0f9d58;">${summary}</div>` + renderProgressBar(100);
 }
 
-// ─── Render ─────────────────────────────────────────────
+// ─── Render preview ──────────────────────────────────────
 function renderPreview(d, source, url, resultDiv) {
   resultDiv.innerHTML = `
     <div style="display:flex;gap:12px;margin-top:8px;">
@@ -166,33 +204,71 @@ function renderPreview(d, source, url, resultDiv) {
     const chapterDiv = document.getElementById("chapterResult");
     chapterDiv.innerHTML = `<p style="font-size:12px;color:#666;">⏳ Đang lấy danh sách chapter...</p>`;
     try {
-      const chapters = await source.fetchChapters(url);
+      // fetchChapters của Qidian trả về { chapters, stats }
+      // các source khác trả về array thẳng
+      const raw = await source.fetchChapters(url);
+      const isQidian = source.name === "qidian";
+      const chapters = isQidian ? raw.chapters : raw;
+      const stats    = isQidian ? raw.stats    : null;
+
       if (!chapters.length) {
         chapterDiv.innerHTML = `<p style="color:red;font-size:12px;">❌ Không tìm thấy chapter nào</p>`;
         return;
       }
+
       await saveState(url, d, chapters);
-      renderChapters(source, chapters, d.bookName, chapterDiv);
+      renderChapters(source, chapters, d.bookName, chapterDiv, stats);
     } catch (err) {
       chapterDiv.innerHTML = `<p style="color:red;font-size:12px;">❌ Lỗi: ${err.message}</p>`;
     }
   });
 }
 
-function renderChapters(source, chapters, bookName, chapterDiv) {
+// ─── Render danh sách chapter ────────────────────────────
+function renderChapters(source, chapters, bookName, chapterDiv, stats = null) {
+  // Chỉ hiển thị free + đã mua trong danh sách
+  const visibleChapters = chapters.filter(c => !(c.vip && !c.purchased));
+
+  // Thống kê Qidian
+  let statsHtml = "";
+  if (stats) {
+    statsHtml = `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0;font-size:11px;">
+        <span style="background:#e8f5e9;color:#2e7d32;padding:2px 8px;border-radius:10px;">
+          ✅ ${stats.free} free
+        </span>
+        <span style="background:#e3f2fd;color:#1565c0;padding:2px 8px;border-radius:10px;">
+          💎 ${stats.purchased} đã mua
+        </span>
+        <span style="background:#fff3e0;color:#e65100;padding:2px 8px;border-radius:10px;">
+          🔒 ${stats.unpurchased} chưa mua
+        </span>
+      </div>`;
+
+    if (stats.unpurchased > 0) {
+      statsHtml += `
+        <div style="font-size:11px;color:#856404;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:5px 8px;margin-bottom:6px;">
+          ⚠️ ${stats.unpurchased} chương VIP bạn chưa mua sẽ được ghi là 【Chưa mua】 trong file.
+        </div>`;
+    }
+  }
+
   chapterDiv.innerHTML = `
     <p style="font-size:12px;color:#333;margin:4px 0;">
-      <b>Tổng: ${chapters.length} chapters</b>
+      <b>Hiển thị: ${visibleChapters.length} chapters</b>
+      ${stats ? `<span style="color:#999;">(tổng ${chapters.length})</span>` : ""}
     </p>
+    ${statsHtml}
     <div style="max-height:300px;overflow-y:auto;border:1px solid #eee;border-radius:4px;margin-top:6px;">
-      ${chapters.map(c => `
+      ${visibleChapters.map(c => `
         <div style="font-size:11px;padding:4px 8px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;gap:8px;">
           <span style="color:#999;white-space:nowrap;min-width:30px;">#${c.chapter_number}</span>
+          ${c.vip ? `<span style="font-size:10px;background:#e3f2fd;color:#1565c0;padding:1px 5px;border-radius:8px;flex-shrink:0;">VIP</span>` : ""}
           <a href="${c.chapter_url}" target="_blank" style="color:#1a73e8;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
             ${c.chapter_title}
           </a>
           <button
-            data-url="${c.chapter_url}"
+            data-idx="${chapters.indexOf(c)}"
             class="btnDownload"
             style="padding:2px 8px;font-size:10px;background:#1a73e8;color:white;border:none;border-radius:3px;cursor:pointer;white-space:nowrap;flex-shrink:0;">
             ⬇ .docx
@@ -206,19 +282,21 @@ function renderChapters(source, chapters, bookName, chapterDiv) {
         ⬇ Tải tất cả ${chapters.length} chapters (.zip)
       </button>
       <div id="downloadNote" style="display:none;margin-top:6px;font-size:11px;color:#856404;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:5px 8px;">
-        ⚠️ Đừng đóng popup trong khi đang tải! Tui nghĩ nó sẽ có thể tải nhanh hơn khi bạn đó donate cho tui :>
+        ⚠️ Đừng đóng popup trong khi đang tải! Tui nghĩ nó sẽ có thể tải nhanh hơn khi bạn đó donate cho tui :>
       </div>
       <div id="downloadProgress" style="margin-top:6px;font-size:11px;color:#666;min-height:16px;"></div>
     </div>
   `;
 
+  // Nút download từng chapter
   document.querySelectorAll(".btnDownload").forEach(btn => {
     btn.addEventListener("click", async () => {
-      const chapterUrl = btn.dataset.url;
+      const idx = parseInt(btn.dataset.idx);
+      const chapter = chapters[idx];
       btn.textContent = "...";
       btn.disabled = true;
       try {
-        const result = await source.fetchContent(chapterUrl);
+        const result = await fetchChapterContent(source, chapter);
         if (!result.content) throw new Error("Không lấy được nội dung");
         await downloadChapterAsDocx(result);
         btn.textContent = "✓ Xong";
@@ -230,6 +308,7 @@ function renderChapters(source, chapters, bookName, chapterDiv) {
     });
   });
 
+  // Nút download tất cả
   document.getElementById("btnDownloadAll").addEventListener("click", async () => {
     const btn = document.getElementById("btnDownloadAll");
     const note = document.getElementById("downloadNote");
@@ -262,8 +341,19 @@ async function restoreState() {
 
   if (chapters && chapters.length) {
     const chapterDiv = document.getElementById("chapterResult");
-    renderChapters(source, chapters, preview.bookName, chapterDiv);
+    // Khi restore, stats không có sẵn nên tính lại từ chapters
+    const stats = source.name === "qidian" ? _calcStats(chapters) : null;
+    renderChapters(source, chapters, preview.bookName, chapterDiv, stats);
   }
+}
+
+function _calcStats(chapters) {
+  return chapters.reduce((acc, c) => {
+    if (!c.vip) acc.free++;
+    else if (c.purchased) acc.purchased++;
+    else acc.unpurchased++;
+    return acc;
+  }, { free: 0, purchased: 0, unpurchased: 0 });
 }
 
 // ─── Events ─────────────────────────────────────────────
@@ -358,8 +448,7 @@ const MEMES = [
 ];
 (function() {
   const img = document.getElementById("memeImg");
-  if (img) {
+  if (img && MEMES.length) {
     img.src = MEMES[Math.floor(Math.random() * MEMES.length)];
   }
 })();
- 
