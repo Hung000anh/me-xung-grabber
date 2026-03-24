@@ -38,7 +38,7 @@ const SourceJjwxc = {
     const novelId = url.match(/novelid=(\d+)/)?.[1];
 
     const authorTag = doc.querySelector("a[href*='oneauthor.php']");
-    const imgTag = doc.querySelector("img[src*='novelcover']")
+    const imgTag = doc.querySelector("body > table:nth-child(25) > tbody > tr > td:nth-child(1) > div:nth-child(2) > img")
                 || doc.querySelector("td img[width]");
     const h1 = doc.querySelector("h1");
 
@@ -56,7 +56,7 @@ const SourceJjwxc = {
     return {
       bookName: h1?.textContent.trim() || doc.title?.split(/[_\|]/)[0]?.trim() || null,
       authorName: authorTag?.textContent.trim() || null,
-      coverImage: imgTag?.getAttribute("src") || null,
+      coverImage: imgTag?.getAttribute("_src") || null,
       sourceBookCode: novelId || null,
       url,
       description,
